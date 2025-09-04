@@ -1,0 +1,44 @@
+name: Publish + Upload Models + UI Tests
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  upload-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Upload models to R2 (optional)
+        run: echo "This step is a placeholder: configure action to upload to R2 or upload manually."
+
+      - name: Publish to Cloudflare Pages (placeholder)
+        run: echo "Pages deploy will be handled by Cloudflare integration in the dashboard."
+
+  ui-tests:
+    needs: upload-and-deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install test deps
+        run: |
+          npm ci || npm install
+          npm install puppeteer --no-save
+      - name: Run Puppeteer UI test
+        env:
+          DEPLOY_URL: ${{ env.DEPLOY_URL }}
+        run: |
+          node tests/ui-puppeteer-test.js
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-test-artifacts
+          path: tests/artifacts/**

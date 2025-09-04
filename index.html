@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="ar">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Image Enhancer — Prototype</title>
+  <style>
+    :root{font-family:system-ui,Segoe UI,Segoe,Arial,sans-serif}
+    body{margin:0;padding:18px;background:#0f172a;color:#e6eef8}
+    .card{background:#0b1220;border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 6px 18px rgba(2,6,23,.6)}
+    header{display:flex;gap:12px;align-items:center}
+    h1{font-size:20px;margin:0}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+    input[type=file]{color:transparent}
+    .file-list{margin-top:12px}
+    .item{display:flex;align-items:center;gap:12px;padding:8px;border-radius:8px;background:#071023}
+    .progress{height:8px;background:#0b2236;border-radius:999px;overflow:hidden;width:140px}
+    .bar{height:100%;background:linear-gradient(90deg,#06b6d4,#7c3aed);width:0%}
+    .btn{background:#06b6d4;color:#02111a;border:none;padding:8px 12px;border-radius:8px;cursor:pointer}
+    .btn.secondary{background:transparent;border:1px solid #16324a;color:#cfeff6}
+    footer{margin-top:12px;display:flex;gap:8px}
+    small{color:#9fb5c6}
+    canvas.thumb{width:96px;height:96px;border-radius:6px;background:#061122}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <header>
+      <h1>Image Enhancer — Prototype</h1>
+      <small>محليًا داخل المتصفح — ONNX Runtime Web (WebGPU → WASM)</small>
+    </header>
+
+    <div class="controls">
+      <label class="btn secondary">
+        اختر صورًا
+        <input id="files" type="file" accept="image/*" multiple />
+      </label>
+
+      <label class="btn secondary">معدل التحسين
+        <select id="scale">
+          <option value="2">2×</option>
+          <option value="4" selected>4×</option>
+        </select>
+      </label>
+
+      <label class="btn secondary">الصيغة
+        <select id="format">
+          <option value="image/jpeg">JPG</option>
+          <option value="image/webp">WebP</option>
+        </select>
+      </label>
+
+      <button id="start" class="btn">ابدأ المعالجة</button>
+      <button id="downloadZip" class="btn secondary" disabled>تنزيل ZIP</button>
+      <a id="donate" class="btn" href="#" target="_blank">تبرع (اختياري)</a>
+    </div>
+
+    <div class="file-list" id="fileList"></div>
+    <small>ملاحظة: ضع ملفات النماذج في مجلد <code>/models</code> أو اربطها بـR2 عبر تهيئة المسارات في worker.js.</small>
+  </div>
+
+  <div class="card">
+    <h2>ملاحظات تقنية سريعة</h2>
+    <ul>
+      <li>التحقق من دعم WebGPU ووجود بدائل WebGL/WASM.</li>
+      <li>المعالجة الثقيلة تُجرى داخل Web Worker (الملف worker.js).</li>
+      <li>الـ tiling و overlap مطبّقان لمنع مشاكل الذاكرة وخطوط التماس.</li>
+    </ul>
+  </div>
+
+  <!-- المكتبات الخارجية (CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.0/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+
+  <script>
+  const filesInput = document.getElementById('files');
+  const fileList = document.getElementById('fileList');
+  const startBtn = document.getElementById('start');
+  const downloadZipBtn = document.getElementById('downloadZip');
+  const scaleSelect = document.getElementById('scale');
+  const formatSelect = document.getElementById('format');
+
+  let images = []; // {file,img,thumbEl,progressBar,statusEl,outputBlob}
+
+  filesInput.addEventListener('change', async (e)=>{
+    const list = Array.from(e.target.files).slice(0,25);
+    images = [];
+    fileList.innerHTML = '';
+    for (const file of list) {
+      if (!file.type.startsWith('image/')) continue;
+      const url = URL.createObjectURL(file);
+      const img = await loadImage(url);
+      const itemEl = document.createElement('div'); itemEl.className='item';
+      const thumb = document.createElement('canvas'); thumb.className='thumb'; thumb.width=96; thumb.height=96;
+      const ctx = thumb.getContext('2d'); drawImageCover(ctx,img,96,96);
+      const meta = document.createElement('div'); meta.style.flex='1';
+      meta.innerHTML = `<div><strong>${escapeHtml(file.name)}</strong> <small>${Math.round(file.size/1024)}KB</small></div>`;
+      const progressWrap = document.createElement('div'); progressWrap.className='progress';
+      const bar = document.createElement('div'); bar.className='bar'; progressWrap.appendChild(bar);
+      const status = document.createElement('small'); status.innerText='Waiting'; status.style.marginLeft='8px';
+      itemEl.appendChild(thumb); itemEl.appendChild(meta); itemEl.appendChild(progressWrap); itemEl.appendChild(status);
+      fileList.appendChild(itemEl);
+      images.push({file,img,thumbEl:thumb,progressBar:bar,statusEl:status,outputBlob:null});
+      URL.revokeObjectURL(url);
+    }
+  });
+
+  startBtn.addEventListener('click', async ()=>{
+    if (!images.length) return alert('اختر صوراً أولاً');
+    startBtn.disabled = true;
+    downloadZipBtn.disabled = true;
+    // create worker
+    const worker = new Worker('worker.js');
+    worker.onmessage = (ev)=>{
+      const msg = ev.data;
+      if (msg.type === 'progress'){
+        const idx = msg.index; const pct = msg.progress;
+        images[idx].progressBar.style.width = pct + '%';
+        images[idx].statusEl.innerText = msg.status || 'Processing';
+      } else if (msg.type === 'result'){
+        const idx = msg.index;
+        images[idx].outputBlob = dataURLToBlob(msg.dataURL);
+        images[idx].progressBar.style.width = '100%';
+        images[idx].statusEl.innerText = 'Done';
+      } else if (msg.type === 'ready'){
+        console.log('worker ready');
+      } else if (msg.type === 'log'){
+        console.log('[worker]', msg.msg);
+      } else if (msg.type === 'error'){
+        console.error('worker error', msg.msg);
+        alert('Worker error: '+msg.msg);
+      }
+    };
+
+    // init worker
+    const modelPaths = {
+      realesrgan: 'models/realesrgan_x4.onnx',
+      face_restore: 'models/gfpgan.onnx'
+    };
+    const options = { scale: parseInt(scaleSelect.value,10), format: formatSelect.value, tileSize:512, overlap:16 };
+    worker.postMessage({type:'init', modelPaths, options});
+
+    for (let i=0;i<images.length;i++){
+      images[i].statusEl.innerText = 'Queued';
+    }
+
+    for (let i=0;i<images.length;i++){
+      const imgObj = images[i];
+      const dataURL = await imageToDataURL(imgObj.img);
+      worker.postMessage({type:'process', index:i, dataURL});
+    }
+
+    // wait for completion
+    const waitForAll = () => new Promise((resolve)=>{
+      const id = setInterval(()=>{
+        if (images.every(it=>it.outputBlob)) { clearInterval(id); resolve(); }
+      },400);
+    });
+    await waitForAll();
+    worker.terminate();
+
+    // zip outputs
+    const zip = new JSZip();
+    for (let i=0;i<images.length;i++){
+      const blob = images[i].outputBlob;
+      const ext = options.format === 'image/webp' ? 'webp' : 'jpg';
+      zip.file(safeFilename(images[i].file.name).replace(/\.[^/.]+$/,'') + '_enhanced.'+ext, blob);
+    }
+    const content = await zip.generateAsync({type:'blob'});
+    downloadZipBtn.disabled = false;
+    downloadZipBtn.onclick = ()=>saveAs(content, 'enhanced_images.zip');
+    startBtn.disabled = false;
+  });
+
+  // helpers
+  function loadImage(url){ return new Promise((res,rej)=>{ const img=new Image(); img.onload=()=>res(img); img.onerror=rej; img.src=url; }); }
+  function drawImageCover(ctx,img,w,h){ const ar = img.width/img.height; const ar2 = w/h; let iw=img.width, ih=img.height, sx=0,sy=0,sw=img.width,sh=img.height; if (ar > ar2){ sw = img.height * ar2; sx = (img.width - sw)/2; } else { sh = img.width / ar2; sy = (img.height - sh)/2; } ctx.clearRect(0,0,w,h); ctx.drawImage(img,sx,sy,sw,sh,0,0,w,h); }
+  function escapeHtml(s){ return (s||'').replace(/[&<>\"]+/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+  function safeFilename(n){ return (n||'').replace(/[^a-z0-9\.\-_]/gi,'_'); }
+  function imageToDataURL(img){ const c=document.createElement('canvas'); c.width=img.naturalWidth; c.height=img.naturalHeight; c.getContext('2d').drawImage(img,0,0); return c.toDataURL('image/png'); }
+  function dataURLToBlob(dataURL){ const parts=dataURL.split(','); const meta=parts[0]; const bstr=atob(parts[1]); let n=bstr.length; const u8=new Uint8Array(n); while(n--) u8[n]=bstr.charCodeAt(n); const mime = meta.match(/:(.*?);/)[1]; return new Blob([u8],{type:mime}); }
+  </script>
+</body>
+</html>
