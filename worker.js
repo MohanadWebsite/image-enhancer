@@ -1,40 +1,42 @@
-// worker.js — updated: local ort + wasmPaths + robust backend fallback + ImageBitmap loading
-// Make sure you uploaded /onnx/ort.min.js and the wasm/mjs files into /onnx/ in your repo.
+// worker.js — robust ONNX Runtime Web worker
+// - Assumes onnxruntime-web UMD script available at /onnx/ort.min.js (or CDN fallback).
+// - Assumes wasm binaries (.wasm/.mjs) uploaded to /onnx/ (same origin).
+// - Uses single-threaded WASM (numThreads=1) for maximum compatibility (no COOP/COEP required).
+// - Tries providers: webgpu -> webgl -> wasm. If wasm create fails, will try fetch+ArrayBuffer fallback.
 
 try {
   importScripts('/onnx/ort.min.js');
 } catch (e) {
-  // fallback to CDN if local import fails (useful for debugging)
   try {
     importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.0/dist/ort.min.js');
-    // note: if you use CDN, ensure its version matches the wasm files you uploaded.
   } catch (ee) {
-    // If import fails completely, we must notify main thread
-    self.postMessage({ type: 'error', msg: 'Failed to import ort.min.js: ' + ee.message });
+    self.postMessage({ type: 'error', msg: 'Failed to import ort.min.js (local + CDN): ' + (ee && ee.message ? ee.message : String(ee)) });
   }
 }
 
 let sessions = { esrgan: null, face: null };
 let cfg = { scale: 4, tileSize: 512, overlap: 16, inputName: 'input', outputName: null, normalize: { method: '0-1' }, format: 'image/jpeg', quality: 0.92 };
 
-//
-// Configure wasm paths and threads if possible
-//
-if (typeof ort !== 'undefined' && ort.env && ort.env.wasm) {
-  try {
-    ort.env.wasm.wasmPaths = '/onnx/'; // where you uploaded the .mjs/.wasm files
-    // set a reasonable default for number of threads (if SharedArrayBuffer available)
+// Configure wasm paths (use absolute path based on worker location to avoid relative path issues)
+try {
+  if (typeof ort !== 'undefined' && ort.env && ort.env.wasm) {
+    // Build absolute base path to /onnx/
+    let base = '';
     try {
-      const hc = typeof navigator !== 'undefined' && navigator.hardwareConcurrency ? navigator.hardwareConcurrency : 2;
-      // use up to (hc - 1) threads but clamp it
-      ort.env.wasm.numThreads = Math.max(1, Math.min(4, Math.floor(Math.max(1, hc) - 1)));
-    } catch (_) { /* ignore */ }
-    postMessage({ type: 'log', msg: 'ort.env.wasm configured, wasmPaths=/onnx/' });
-  } catch (e) {
-    postMessage({ type: 'log', msg: 'Could not configure ort.env.wasm: ' + e.message });
+      // self.location is the worker's script URL origin-aware
+      base = (self.location && self.location.origin) ? (self.location.origin + '/onnx/') : '/onnx/';
+    } catch (_) {
+      base = '/onnx/';
+    }
+    ort.env.wasm.wasmPaths = base;
+    // Use single-threaded WASM for compatibility (avoids cross-origin-isolation requirement)
+    try { ort.env.wasm.numThreads = 1; } catch (_) { /* ignore */ }
+    postMessage({ type: 'log', msg: `ort.env.wasm configured → wasmPaths=${ort.env.wasm.wasmPaths} numThreads=${ort.env.wasm.numThreads || 1}` });
+  } else {
+    postMessage({ type: 'log', msg: 'ort global not found or ort.env.wasm missing — import may have failed' });
   }
-} else {
-  postMessage({ type: 'log', msg: 'ort global not found or ort.env.wasm missing (import failed?)' });
+} catch (e) {
+  postMessage({ type: 'log', msg: 'Error configuring ort.env.wasm: ' + (e && e.message ? e.message : String(e)) });
 }
 
 self.onmessage = async (ev) => {
@@ -44,30 +46,38 @@ self.onmessage = async (ev) => {
       cfg = { ...cfg, ...(msg.options || {}) };
       postMessage({ type: 'log', msg: 'worker init: options merged' });
 
+      // load ESRGAN (realesrgan)
       if (msg.modelPaths && msg.modelPaths.realesrgan) {
         postMessage({ type: 'progress', index: -1, progress: 2, status: 'loading ESReGAN model...' });
-        sessions.esrgan = await createOrtSession(msg.modelPaths.realesrgan);
-        postMessage({ type: 'log', msg: 'ESRGAN session ready' });
+        sessions.esrgan = await createOrtSession(msg.modelPaths.realesrgan).catch(err => {
+          postMessage({ type: 'log', msg: 'ESRGAN session creation failed: ' + String(err && err.message ? err.message : err) });
+          return null;
+        });
+        if (sessions.esrgan) postMessage({ type: 'log', msg: 'ESRGAN session ready' });
       } else {
         postMessage({ type: 'log', msg: 'No realesrgan path provided in init' });
       }
 
+      // load GFPGAN (face restore) optionally
       if (msg.modelPaths && msg.modelPaths.face_restore) {
         try {
           postMessage({ type: 'progress', index: -1, progress: 5, status: 'loading face restore model...' });
           sessions.face = await createOrtSession(msg.modelPaths.face_restore);
           postMessage({ type: 'log', msg: 'Face session ready' });
         } catch (e) {
-          postMessage({ type: 'log', msg: 'Face model load failed: ' + e.message });
+          postMessage({ type: 'log', msg: 'Face model load failed: ' + (e && e.message ? e.message : String(e)) });
+          sessions.face = null;
         }
       }
 
       postMessage({ type: 'ready' });
-    } else if (msg.type === 'process') {
+    }
+    else if (msg.type === 'process') {
       const idx = msg.index;
       postMessage({ type: 'progress', index: idx, progress: 2, status: 'worker: loading image' });
       const img = await loadImageFromDataURL(msg.dataURL);
 
+      // tile & process
       const tiles = createTiles(img, cfg.tileSize, cfg.overlap);
       const outTiles = [];
 
@@ -82,6 +92,7 @@ self.onmessage = async (ev) => {
 
         const inputTensor = canvasToOrtTensor(tile.canvas, cfg);
         const feeds = {}; feeds[cfg.inputName || 'input'] = inputTensor;
+
         const results = await sessions.esrgan.run(feeds);
         const outKey = cfg.outputName || Object.keys(results)[0];
         const outTensor = results[outKey];
@@ -102,12 +113,13 @@ self.onmessage = async (ev) => {
           const faceRes = await sessions.face.run({ [cfg.inputName || 'input']: faceTensor });
           const outKey = cfg.outputName || Object.keys(faceRes)[0];
           finalCanvas = tensorToOffscreenCanvas(faceRes[outKey], merged.width, merged.height);
-        } catch (e) { postMessage({ type: 'log', msg: 'Face restore failed: ' + e.message }); }
+        } catch (e) {
+          postMessage({ type: 'log', msg: 'Face restore failed: ' + (e && e.message ? e.message : String(e)) });
+        }
       }
 
       try { applyUnsharpMask(finalCanvas, 0.5, 1); } catch (e) { /* ignore */ }
 
-      // convert to blob and return dataURL
       const blob = await (typeof finalCanvas.convertToBlob === 'function' ? finalCanvas.convertToBlob({ type: cfg.format, quality: cfg.quality }) : canvasToBlobFallback(finalCanvas, cfg.format, cfg.quality));
       const dataURL = await blobToDataURL(blob);
       postMessage({ type: 'result', index: idx, dataURL });
@@ -118,42 +130,78 @@ self.onmessage = async (ev) => {
 };
 
 //
-// Create ONNX session with fallback: WebGPU -> WASM
+// createOrtSession: try providers and fallbacks (webgpu -> webgl -> wasm, with ArrayBuffer fallback for wasm)
 //
 async function createOrtSession(path) {
-  if (typeof ort === 'undefined') throw new Error('ONNX Runtime (ort) is not loaded in worker.');
+  if (typeof ort === 'undefined') throw new Error('ONNX Runtime (ort) not available in worker.');
 
-  // Try WebGPU first (fast) then WASM fallback
+  // helper for nice logs
+  const safeLogErr = (e) => (e && e.message) ? e.message : String(e);
+
+  // Quick HEAD check to catch 4xx/5xx or CORS early (best-effort, not required)
+  try {
+    const head = await fetch(path, { method: 'HEAD' });
+    if (!head.ok) postMessage({ type: 'log', msg: `Model HEAD request returned ${head.status} — server may not allow HEAD; continuing anyway.` });
+    else postMessage({ type: 'log', msg: `Model HEAD OK (status ${head.status}).` });
+  } catch (e) {
+    postMessage({ type: 'log', msg: `Model HEAD request failed (this may be OK): ${safeLogErr(e)} — proceeding to try open create.` });
+  }
+
+  // Try WebGPU
   try {
     postMessage({ type: 'log', msg: 'Trying to create session with WebGPU backend...' });
-    const sess = await ort.InferenceSession.create(path, { executionProviders: ['webgpu'] });
+    const s = await ort.InferenceSession.create(path, { executionProviders: ['webgpu'] });
     postMessage({ type: 'log', msg: 'Session created using WebGPU' });
-    return sess;
+    return s;
   } catch (eWebgpu) {
-    postMessage({ type: 'log', msg: 'WebGPU session failed: ' + (eWebgpu && eWebgpu.message ? eWebgpu.message : eWebgpu) });
-    // Try wasm (library will pick simd-threaded if available & allowed)
+    postMessage({ type: 'log', msg: 'WebGPU session failed: ' + safeLogErr(eWebgpu) });
+  }
+
+  // Try WebGL (if available)
+  try {
+    postMessage({ type: 'log', msg: 'Trying to create session with WebGL backend...' });
+    const s = await ort.InferenceSession.create(path, { executionProviders: ['webgl'] });
+    postMessage({ type: 'log', msg: 'Session created using WebGL' });
+    return s;
+  } catch (eWebgl) {
+    postMessage({ type: 'log', msg: 'WebGL session failed: ' + safeLogErr(eWebgl) });
+  }
+
+  // Try WASM (URL)
+  try {
+    postMessage({ type: 'log', msg: 'Trying to create session with WASM backend (URL) ...' });
+    const s = await ort.InferenceSession.create(path, { executionProviders: ['wasm'] });
+    postMessage({ type: 'log', msg: 'Session created using WASM (from URL)' });
+    return s;
+  } catch (eWasmUrl) {
+    postMessage({ type: 'log', msg: 'WASM session (URL) failed: ' + safeLogErr(eWasmUrl) });
+    // fallback: try fetch as ArrayBuffer then create session from buffer
     try {
-      postMessage({ type: 'log', msg: 'Trying to create session with WASM backend...' });
-      const sess2 = await ort.InferenceSession.create(path, { executionProviders: ['wasm'] });
-      postMessage({ type: 'log', msg: 'Session created using WASM backend' });
-      return sess2;
-    } catch (eWasm) {
-      postMessage({ type: 'log', msg: 'WASM session creation failed: ' + (eWasm && eWasm.message ? eWasm.message : eWasm) });
-      throw new Error('Failed to create ONNX session: ' + (eWasm && eWasm.message ? eWasm.message : eWasm));
+      postMessage({ type: 'log', msg: 'Attempting fetch(ArrayBuffer) fallback for WASM session...' });
+      const resp = await fetch(path);
+      if (!resp.ok) throw new Error('fetch failed with status ' + resp.status);
+      const ab = await resp.arrayBuffer();
+      postMessage({ type: 'log', msg: 'Downloaded model ArrayBuffer (' + Math.round(ab.byteLength / 1024) + ' KB). Trying create from buffer...' });
+      const s2 = await ort.InferenceSession.create(ab, { executionProviders: ['wasm'] });
+      postMessage({ type: 'log', msg: 'Session created using WASM (from ArrayBuffer)' });
+      return s2;
+    } catch (eFetch) {
+      postMessage({ type: 'log', msg: 'WASM ArrayBuffer fallback failed: ' + safeLogErr(eFetch) });
+      throw new Error('Failed to create ONNX session. lastError: ' + safeLogErr(eFetch));
     }
   }
 }
 
 //
-// Image loading inside worker using createImageBitmap
+// Image loader inside worker using createImageBitmap
 //
 function loadImageFromDataURL(dataURL) {
   return new Promise(async (resolve, reject) => {
     try {
       const res = await fetch(dataURL);
+      if (!res.ok) throw new Error('Failed to fetch dataURL inside worker');
       const blob = await res.blob();
       const bmp = await createImageBitmap(blob);
-      // createImageBitmap returns ImageBitmap which works with drawImage on OffscreenCanvas
       resolve(bmp);
     } catch (e) {
       reject(e);
@@ -162,8 +210,10 @@ function loadImageFromDataURL(dataURL) {
 }
 
 //
-// Helpers: tiling, tensor conversion, merge, post-processing
+// The rest: tiling, tensor conversion, merging and post-processing
+// (kept same as your original, minimal changes for clarity)
 //
+
 function createTiles(img, tileSize, overlap) {
   const pw = img.width, ph = img.height; const tiles = [];
   const tmp = new OffscreenCanvas(pw, ph); const tctx = tmp.getContext('2d');
@@ -273,20 +323,15 @@ function applyUnsharpMask(canvas, amount = 0.5, radius = 1) {
 
 function blobToDataURL(blob) { return new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); }); }
 
-//
-// Fallback blob conversion for OffscreenCanvas in older browsers
-//
+// canvasToBlobFallback (keeps compatibility for older browsers)
 function canvasToBlobFallback(canvas, type = 'image/jpeg', quality = 0.92) {
   return new Promise((resolve, reject) => {
     try {
-      // transfer to a bitmap in main thread isn't possible here; try to use convertToBlob if exists
       if (typeof canvas.convertToBlob === 'function') {
         canvas.convertToBlob({ type, quality }).then(resolve).catch(reject);
       } else {
-        // as last resort, draw to an ImageBitmap and use a canvas from it
         try {
-          const bitmapPromise = createImageBitmap(canvas);
-          bitmapPromise.then(bitmap => {
+          createImageBitmap(canvas).then(bitmap => {
             const tmp = new OffscreenCanvas(bitmap.width, bitmap.height);
             const ctx = tmp.getContext('2d');
             ctx.drawImage(bitmap, 0, 0);
