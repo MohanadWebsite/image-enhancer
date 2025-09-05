@@ -1,5 +1,5 @@
-// worker.js — simplified production-ready worker
-importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js');
+// worker.js — fixed for Image + WASM backend
+importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.0/dist/ort.min.js');
 
 let sessions = {esrgan: null, face: null};
 let cfg = { scale:4, tileSize:512, overlap:16, inputName:'input', outputName:null, normalize:{method:'0-1'}, format:'image/jpeg', quality:0.92 };
@@ -15,7 +15,7 @@ self.onmessage = async (ev)=>{
       }
       if (msg.modelPaths && msg.modelPaths.face_restore){
         try{
-          sessions.face = await createOrtSession(msg.modelPaths.face_restore, {executionProviders:['wasm']});
+          sessions.face = await createOrtSession(msg.modelPaths.face_restore);
           postMessage({type:'log', msg:'Face session ready'});
         }catch(e){ postMessage({type:'log', msg:'Face model load failed: '+e.message}); }
       }
@@ -74,17 +74,29 @@ self.onmessage = async (ev)=>{
   }
 };
 
-async function createOrtSession(path, opts = {executionProviders:['webgpu','wasm']}){
+async function createOrtSession(path){
   try{
-    const session = await ort.InferenceSession.create(path, {executionProviders: opts.executionProviders});
+    // Force wasm backend (more stable)
+    const session = await ort.InferenceSession.create(path, {executionProviders:['wasm']});
     return session;
-  }catch(err){
-    try{ return await ort.InferenceSession.create(path, {executionProviders:['wasm']}); }
-    catch(e){ throw new Error('Failed to create ONNX session: '+e.message); }
+  }catch(e){
+    throw new Error('Failed to create ONNX session: '+e.message);
   }
 }
 
-function loadImageFromDataURL(dataURL){ return new Promise((res,rej)=>{ const img=new Image(); img.onload=()=>res(img); img.onerror=rej; img.src = dataURL; }); }
+// ✅ fixed: use createImageBitmap inside Worker
+function loadImageFromDataURL(dataURL){
+  return new Promise(async (resolve, reject) => {
+    try {
+      const res = await fetch(dataURL);
+      const blob = await res.blob();
+      const bmp = await createImageBitmap(blob);
+      resolve(bmp);
+    } catch(e){
+      reject(e);
+    }
+  });
+}
 
 function createTiles(img, tileSize, overlap){
   const pw = img.width, ph = img.height; const tiles = [];
@@ -151,10 +163,6 @@ function mergeTilesWeighted(tiles, outW, outH, overlap){
         const dstIdx = gy*outW + gx;
         let wx = 1.0, wy = 1.0;
         if (overlap > 0){
-          const left = Math.max(0, overlap - xx);
-          const right = Math.max(0, overlap - (tw - 1 - xx));
-          const top = Math.max(0, overlap - yy);
-          const bottom = Math.max(0, overlap - (th - 1 - yy));
           const edgeFactorX = overlap ? (1 - (Math.min(xx, tw-1-xx)/Math.max(1,(overlap)))) : 0;
           const edgeFactorY = overlap ? (1 - (Math.min(yy, th-1-yy)/Math.max(1,(overlap)))) : 0;
           wx = 1.0 - edgeFactorX*0.5;
