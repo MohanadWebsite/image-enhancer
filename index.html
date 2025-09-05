@@ -135,8 +135,8 @@
 
     // init worker
     const modelPaths = {
-      realesrgan: 'models/realesrgan_x4.onnx',
-      face_restore: 'models/gfpgan.onnx'
+      realesrgan: 'https://pub-42dba45c387c4d23801c45c37f271ecf.r2.dev/model.onnx',
+      face_restore: 'https://pub-42dba45c387c4d23801c45c37f271ecf.r2.dev/GFPGANv1.4.onnx'
     };
     const options = { scale: parseInt(scaleSelect.value,10), format: formatSelect.value, tileSize:512, overlap:16 };
     worker.postMessage({type:'init', modelPaths, options});
