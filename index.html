@@ -3,183 +3,386 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Image Enhancer — Prototype</title>
+  <title>Image Enhancer — Colab-like ONNX Pipeline</title>
   <style>
     :root{font-family:system-ui,Segoe UI,Segoe,Arial,sans-serif}
-    body{margin:0;padding:18px;background:#0f172a;color:#e6eef8}
-    .card{background:#0b1220;border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 6px 18px rgba(2,6,23,.6)}
-    header{display:flex;gap:12px;align-items:center}
+    body{margin:0;padding:20px;background:#071228;color:#e6eef8;line-height:1.45}
+    .wrap{max-width:980px;margin:20px auto}
+    .card{background:#061428;border-radius:12px;padding:18px;margin-bottom:14px;box-shadow:0 8px 30px rgba(2,6,23,.6)}
+    header{display:flex;gap:12px;align-items:center;justify-content:space-between}
     h1{font-size:20px;margin:0}
-    .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-    input[type=file]{color:transparent}
-    .file-list{margin-top:12px}
-    .item{display:flex;align-items:center;gap:12px;padding:8px;border-radius:8px;background:#071023}
-    .progress{height:8px;background:#0b2236;border-radius:999px;overflow:hidden;width:140px}
+    small.muted{color:#9fb5c6}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+    label.btn{background:transparent;border:1px solid #123045;color:#bfeff7;padding:8px 12px;border-radius:8px;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
+    .btn.primary{background:linear-gradient(90deg,#06b6d4,#7c3aed);color:#02111a;border:none}
+    input[type=file]{display:none}
+    .file-list{margin-top:14px}
+    .item{display:flex;align-items:center;gap:12px;padding:10px;border-radius:8px;background:#031522}
+    .thumb{width:96px;height:96px;border-radius:6px;background:#061122;object-fit:cover}
+    .meta{flex:1;min-width:180px}
+    .progress{height:10px;background:#0b2236;border-radius:999px;overflow:hidden;width:160px}
     .bar{height:100%;background:linear-gradient(90deg,#06b6d4,#7c3aed);width:0%}
-    .btn{background:#06b6d4;color:#02111a;border:none;padding:8px 12px;border-radius:8px;cursor:pointer}
-    .btn.secondary{background:transparent;border:1px solid #16324a;color:#cfeff6}
-    footer{margin-top:12px;display:flex;gap:8px}
-    small{color:#9fb5c6}
-    canvas.thumb{width:96px;height:96px;border-radius:6px;background:#061122}
+    .status{font-size:13px;color:#9fb5c6}
+    .actions{display:flex;gap:8px;align-items:center}
+    input[type=number], select {background:transparent;border:1px solid #123045;color:#bfeff7;padding:6px 8px;border-radius:6px}
+    .log{background:#021425;color:#9fd7e6;padding:10px;border-radius:8px;height:120px;overflow:auto;font-size:13px}
+    footer.small{font-size:12px;color:#9fb5c6;margin-top:10px}
+    .advanced{margin-top:10px;display:flex;gap:10px;flex-wrap:wrap}
+    .checkbox{display:inline-flex;gap:8px;align-items:center}
+    .note{color:#9fb5c6;font-size:13px;margin-top:8px}
   </style>
 </head>
 <body>
-  <div class="card">
-    <header>
-      <h1>Image Enhancer — Prototype</h1>
-      <small>محليًا داخل المتصفح — ONNX Runtime Web (WebGPU → WASM)</small>
-    </header>
+  <div class="wrap">
+    <div class="card">
+      <header>
+        <div>
+          <h1>Image Enhancer — Real-ESRGAN + GFPGAN (ONNX)</h1>
+          <small class="muted">نفس خط أنابيب Colab: تكبير ×4 ثم تحسين الوجوه — يعمل داخل المتصفح باستخدام ONNX Runtime Web</small>
+        </div>
+        <div class="actions">
+          <button id="startBtn" class="btn primary">ابدأ المعالجة</button>
+          <button id="cancelBtn" class="btn" disabled>إيقاف</button>
+          <button id="downloadZip" class="btn" disabled>تنزيل ZIP</button>
+        </div>
+      </header>
 
-    <div class="controls">
-      <label class="btn secondary">
-        اختر صورًا
-        <input id="files" type="file" accept="image/*" multiple />
-      </label>
+      <div class="controls">
+        <label class="btn">
+          اختر صورًا
+          <input id="files" type="file" accept="image/*" multiple />
+        </label>
 
-      <label class="btn secondary">معدل التحسين
-        <select id="scale">
-          <option value="2">2×</option>
-          <option value="4" selected>4×</option>
-        </select>
-      </label>
+        <label class="btn">معدل التكبير
+          <select id="scale">
+            <option value="2">2×</option>
+            <option value="4" selected>4× (Colab)</option>
+          </select>
+        </label>
 
-      <label class="btn secondary">الصيغة
-        <select id="format">
-          <option value="image/jpeg">JPG</option>
-          <option value="image/webp">WebP</option>
-        </select>
-      </label>
+        <label class="btn">صيغة الإخراج
+          <select id="format">
+            <option value="image/jpeg">JPG (تلقائي)</option>
+            <option value="image/webp">WebP</option>
+          </select>
+        </label>
 
-      <button id="start" class="btn">ابدأ المعالجة</button>
-      <button id="downloadZip" class="btn secondary" disabled>تنزيل ZIP</button>
-      <a id="donate" class="btn" href="#" target="_blank">تبرع (اختياري)</a>
+        <div class="advanced">
+          <label class="btn">tileSize
+            <input id="tileSize" type="number" min="128" step="64" value="400" style="width:90px;margin-left:6px" />
+          </label>
+
+          <label class="btn">tilePad (overlap)
+            <input id="tilePad" type="number" min="0" max="64" step="2" value="10" style="width:70px;margin-left:6px" />
+          </label>
+
+          <label class="btn">Normalize
+            <select id="normalize">
+              <option value="0-1" selected>0..1 (Colab default)</option>
+              <option value="-1-1">-1..1</option>
+            </select>
+          </label>
+
+          <label class="checkbox" style="color:#bfeff7">
+            <input id="applyGFPGAN" type="checkbox" checked /> تفعيل GFPGAN (تحسين الوجوه)
+          </label>
+        </div>
+      </div>
+
+      <div class="file-list" id="fileList"></div>
+      <div class="note">ملاحظة: الموديلات يجب أن تكون متاحة على R2 (أنت رفعتهم). تأكد من إعداد CORS للـbucket للسماح لموقعك بالتحميل (GET). ملفات runtime الخاصة بـonnxruntime يجب أن تكون متاحة محليًا في مجلد <code>/onnx/</code>.</div>
     </div>
 
-    <div class="file-list" id="fileList"></div>
-    <small>ملاحظة: ضع ملفات النماذج في مجلد <code>/models</code> أو اربطها بـR2 عبر تهيئة المسارات في worker.js.</small>
+    <div class="card">
+      <h2>التقدم والسجل</h2>
+      <div style="display:flex;gap:12px">
+        <div style="flex:1">
+          <div id="log" class="log"></div>
+        </div>
+        <div style="width:260px">
+          <strong>حالة النشر</strong>
+          <div id="statusOverview" class="status" style="margin-top:8px">جاهز — لم تبدأ المعالجة</div>
+          <div style="margin-top:8px"><small class="muted">الموديلات (R2):</small>
+            <ul style="padding-left:16px;margin:6px 0">
+              <li><small id="r2_esr" class="muted">ESRGAN: (لم يتم التهيئة)</small></li>
+              <li><small id="r2_gf" class="muted">GFPGAN: (لم يتم التهيئة)</small></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <footer class="small">هذا الواجهة تتواصل مع <code>worker.js</code> الذي يشغّل ONNX Runtime Web لمعالجة الصور داخل المتصفح (WebGPU → WASM fallback).</footer>
+    </div>
   </div>
 
-  <div class="card">
-    <h2>ملاحظات تقنية سريعة</h2>
-    <ul>
-      <li>التحقق من دعم WebGPU ووجود بدائل WebGL/WASM.</li>
-      <li>المعالجة الثقيلة تُجرى داخل Web Worker (الملف worker.js).</li>
-      <li>الـ tiling و overlap مطبّقان لمنع مشاكل الذاكرة وخطوط التماس.</li>
-    </ul>
-  </div>
-
-  <!-- المكتبات الخارجية (CDN) -->
-  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+  <!-- External libs -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.0/jszip.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
 
   <script>
+  // ========== Configuration: set your R2 model URLs here ==========
+  const R2_REALESRGAN = 'https://pub-42dba45c387c4d23801c45c37f271ecf.r2.dev/model.onnx';
+  const R2_GFPGAN = 'https://pub-42dba45c387c4d23801c45c37f271ecf.r2.dev/GFPGANv1.4.onnx';
+  // =================================================================
+
+  // DOM
   const filesInput = document.getElementById('files');
   const fileList = document.getElementById('fileList');
-  const startBtn = document.getElementById('start');
+  const startBtn = document.getElementById('startBtn');
+  const cancelBtn = document.getElementById('cancelBtn');
   const downloadZipBtn = document.getElementById('downloadZip');
-  const scaleSelect = document.getElementById('scale');
-  const formatSelect = document.getElementById('format');
+  const scaleEl = document.getElementById('scale');
+  const formatEl = document.getElementById('format');
+  const tileSizeEl = document.getElementById('tileSize');
+  const tilePadEl = document.getElementById('tilePad');
+  const normalizeEl = document.getElementById('normalize');
+  const applyGFPEl = document.getElementById('applyGFPGAN');
+  const logEl = document.getElementById('log');
+  const statusOverview = document.getElementById('statusOverview');
+  const r2_esr = document.getElementById('r2_esr');
+  const r2_gf = document.getElementById('r2_gf');
 
+  // state
   let images = []; // {file,img,thumbEl,progressBar,statusEl,outputBlob}
+  let worker = null;
+  let cancelled = false;
 
+  // helpers
+  function log(msg){ const li = document.createElement('div'); li.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`; logEl.appendChild(li); logEl.scrollTop = logEl.scrollHeight; }
+  function safeFilename(n){ return (n||'').replace(/[^a-z0-9\.\-_]/gi,'_'); }
+  function escapeHtml(s){ return (s||'').replace(/[&<>\"]+/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+
+  function drawThumb(img, canvas){
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    // cover fit like background-size:cover
+    const ar = img.width / img.height;
+    const ar2 = w / h;
+    let sx = 0, sy = 0, sw = img.width, sh = img.height;
+    if (ar > ar2) { sw = img.height * ar2; sx = (img.width - sw) / 2; }
+    else { sh = img.width / ar2; sy = (img.height - sh) / 2; }
+    ctx.clearRect(0,0,w,h);
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
+  }
+
+  function loadImage(url){ return new Promise((res, rej)=>{ const img = new Image(); img.crossOrigin = 'anonymous'; img.onload = ()=>res(img); img.onerror = (e)=>rej(e); img.src = url; }); }
+
+  function imageToDataURL(img){
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth || img.width;
+    c.height = img.naturalHeight || img.height;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    return c.toDataURL('image/png');
+  }
+
+  function dataURLToBlob(dataURL){
+    const parts = dataURL.split(',');
+    const meta = parts[0];
+    const bstr = atob(parts[1]);
+    let n = bstr.length;
+    const u8 = new Uint8Array(n);
+    while(n--) u8[n] = bstr.charCodeAt(n);
+    const mime = meta.match(/:(.*?);/)[1];
+    return new Blob([u8], {type: mime});
+  }
+
+  // handle file selection
   filesInput.addEventListener('change', async (e)=>{
     const list = Array.from(e.target.files).slice(0,25);
     images = [];
     fileList.innerHTML = '';
-    for (const file of list) {
+    for (const file of list){
       if (!file.type.startsWith('image/')) continue;
       const url = URL.createObjectURL(file);
-      const img = await loadImage(url);
-      const itemEl = document.createElement('div'); itemEl.className='item';
-      const thumb = document.createElement('canvas'); thumb.className='thumb'; thumb.width=96; thumb.height=96;
-      const ctx = thumb.getContext('2d'); drawImageCover(ctx,img,96,96);
-      const meta = document.createElement('div'); meta.style.flex='1';
-      meta.innerHTML = `<div><strong>${escapeHtml(file.name)}</strong> <small>${Math.round(file.size/1024)}KB</small></div>`;
-      const progressWrap = document.createElement('div'); progressWrap.className='progress';
-      const bar = document.createElement('div'); bar.className='bar'; progressWrap.appendChild(bar);
-      const status = document.createElement('small'); status.innerText='Waiting'; status.style.marginLeft='8px';
-      itemEl.appendChild(thumb); itemEl.appendChild(meta); itemEl.appendChild(progressWrap); itemEl.appendChild(status);
-      fileList.appendChild(itemEl);
-      images.push({file,img,thumbEl:thumb,progressBar:bar,statusEl:status,outputBlob:null});
-      URL.revokeObjectURL(url);
+      try {
+        const img = await loadImage(url);
+        const item = document.createElement('div'); item.className = 'item';
+        const thumb = document.createElement('canvas'); thumb.width=96; thumb.height=96; thumb.className='thumb';
+        drawThumb(img, thumb);
+        const meta = document.createElement('div'); meta.className='meta';
+        meta.innerHTML = `<div><strong>${escapeHtml(file.name)}</strong> <small class="muted">(${Math.round(file.size/1024)} KB)</small></div>`;
+        const progWrap = document.createElement('div'); progWrap.className='progress';
+        const bar = document.createElement('div'); bar.className='bar'; progWrap.appendChild(bar);
+        const status = document.createElement('div'); status.className='status'; status.innerText = 'مستعد';
+        item.appendChild(thumb); item.appendChild(meta); item.appendChild(progWrap); item.appendChild(status);
+        fileList.appendChild(item);
+        images.push({file, img, thumbEl:thumb, progressBar:bar, statusEl:status, outputBlob:null});
+      } catch (err){
+        console.warn('image load failed', err);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
     }
+    log(`تم تحديد ${images.length} صورة(صور).`);
   });
 
+  // start processing
   startBtn.addEventListener('click', async ()=>{
-    if (!images.length) return alert('اختر صوراً أولاً');
+    if (!images.length) return alert('اختر صورًا أولاً');
     startBtn.disabled = true;
+    cancelBtn.disabled = false;
     downloadZipBtn.disabled = true;
+    cancelled = false;
+    log('بدء التهيئة...');
+
     // create worker
-    const worker = new Worker('worker.js');
+    try {
+      if (worker) { try { worker.terminate(); } catch(_){} worker=null; }
+      worker = new Worker('worker.js');
+    } catch (e) {
+      alert('فشل في إنشاء الـWeb Worker: ' + e.message);
+      startBtn.disabled = false; cancelBtn.disabled = true;
+      return;
+    }
+
+    // prepare options and model paths
+    const options = {
+      scale: parseInt(scaleEl.value,10),
+      tileSize: parseInt(tileSizeEl.value || 400,10),
+      overlap: parseInt(tilePadEl.value || 10,10),
+      normalize: { method: normalizeEl.value === '0-1' ? '0-1' : '-1-1' },
+      format: formatEl.value,
+      quality: 0.95,
+      applyGFPGAN: applyGFPEl.checked
+    };
+
+    const modelPaths = {
+      realesrgan: R2_REALESRGAN,
+      face_restore: R2_GFPGAN
+    };
+
+    // wire messages
+    const pendingResolvers = new Map();
+    let readyResolve, readyReject;
+    const readyPromise = new Promise((res, rej)=>{ readyResolve = res; readyReject = rej; });
+    let sessionsReady = false;
+
     worker.onmessage = (ev)=>{
       const msg = ev.data;
-      if (msg.type === 'progress'){
-        const idx = msg.index; const pct = msg.progress;
-        images[idx].progressBar.style.width = pct + '%';
-        images[idx].statusEl.innerText = msg.status || 'Processing';
-      } else if (msg.type === 'result'){
+      if (!msg) return;
+      if (msg.type === 'log') { log('[worker] ' + msg.msg); }
+      else if (msg.type === 'progress') {
         const idx = msg.index;
-        images[idx].outputBlob = dataURLToBlob(msg.dataURL);
-        images[idx].progressBar.style.width = '100%';
-        images[idx].statusEl.innerText = 'Done';
-      } else if (msg.type === 'ready'){
-        console.log('worker ready');
-      } else if (msg.type === 'log'){
-        console.log('[worker]', msg.msg);
-      } else if (msg.type === 'error'){
-        console.error('worker error', msg.msg);
-        alert('Worker error: '+msg.msg);
+        if (typeof idx === 'number' && images[idx]) {
+          images[idx].progressBar.style.width = (msg.progress || 0) + '%';
+          images[idx].statusEl.innerText = msg.status || 'جاري المعالجة';
+        } else {
+          statusOverview.innerText = msg.status || statusOverview.innerText;
+        }
+      }
+      else if (msg.type === 'ready') {
+        sessionsReady = true;
+        readyResolve();
+        log('الـWorker جاهز — النماذج محملة (إن أمكن).');
+        r2_esr.innerText = `ESRGAN: ${modelPaths.realesrgan}`;
+        r2_gf.innerText = `GFPGAN: ${modelPaths.face_restore}`;
+        statusOverview.innerText = 'نماذج جاهزة — بإمكانك بدء المعالجة';
+      }
+      else if (msg.type === 'result') {
+        const idx = msg.index;
+        if (typeof idx === 'number' && images[idx]) {
+          images[idx].outputBlob = dataURLToBlob(msg.dataURL);
+          images[idx].progressBar.style.width = '100%';
+          images[idx].statusEl.innerText = 'تم ✓';
+          log(`انتهت المعالجة للصورة #${idx} (${images[idx].file.name})`);
+          const resolver = pendingResolvers.get(idx);
+          if (resolver) { pendingResolvers.delete(idx); resolver(); }
+        }
+      }
+      else if (msg.type === 'error') {
+        log('[worker error] ' + msg.msg);
+        // reject all pending
+        for (const r of pendingResolvers.values()) try { r(); } catch(_) {}
+        pendingResolvers.clear();
+        alert('Worker error: ' + msg.msg);
       }
     };
 
-    // init worker
-    const modelPaths = {
-      realesrgan: 'https://pub-42dba45c387c4d23801c45c37f271ecf.r2.dev/model.onnx',
-      face_restore: 'https://pub-42dba45c387c4d23801c45c37f271ecf.r2.dev/GFPGANv1.4.onnx'
-    };
-    const options = { scale: parseInt(scaleSelect.value,10), format: formatSelect.value, tileSize:512, overlap:16 };
-    worker.postMessage({type:'init', modelPaths, options});
-
-    for (let i=0;i<images.length;i++){
-      images[i].statusEl.innerText = 'Queued';
+    // send init
+    try {
+      worker.postMessage({ type: 'init', modelPaths, options });
+    } catch (e) {
+      alert('فشل إرسال init للـWorker: ' + e.message);
+      startBtn.disabled = false; cancelBtn.disabled = true;
+      return;
     }
 
-    for (let i=0;i<images.length;i++){
-      const imgObj = images[i];
-      const dataURL = await imageToDataURL(imgObj.img);
-      worker.postMessage({type:'process', index:i, dataURL});
+    // wait for ready (timeout after 45s but still continue if not ready)
+    statusOverview.innerText = 'تحميل النماذج... الرجاء الانتظار';
+    log('جاري تحميل النماذج من R2. (بانتظار رسالة ready من الـWorker)');
+    const readyTimeout = new Promise((res)=>setTimeout(()=>res('timeout'), 45000));
+    const readyResult = await Promise.race([readyPromise, readyTimeout]);
+    if (readyResult === 'timeout') {
+      log('انتظار الـWorker انتهى بمهلة. إذا لم تكن النماذج محمّلة، قد يفشل التشغيل أو سيحاول الـWorker fallback.');
+      // but continue — worker will attempt wasm fallback; user can still proceed
     }
 
-    // wait for completion
-    const waitForAll = () => new Promise((resolve)=>{
-      const id = setInterval(()=>{
-        if (images.every(it=>it.outputBlob)) { clearInterval(id); resolve(); }
-      },400);
-    });
-    await waitForAll();
-    worker.terminate();
+    // sequential processing: send one image at a time (safe for memory & like Colab)
+    statusOverview.innerText = 'بدء المعالجة...';
+    for (let i = 0; i < images.length; ++i) {
+      if (cancelled) break;
+      images[i].statusEl.innerText = 'قيد الإرسال';
+      images[i].progressBar.style.width = '2%';
+      const dataURL = imageToDataURL(images[i].img);
 
-    // zip outputs
-    const zip = new JSZip();
-    for (let i=0;i<images.length;i++){
-      const blob = images[i].outputBlob;
-      const ext = options.format === 'image/webp' ? 'webp' : 'jpg';
-      zip.file(safeFilename(images[i].file.name).replace(/\.[^/.]+$/,'') + '_enhanced.'+ext, blob);
+      // create promise for result
+      const p = new Promise((resolve)=>{ pendingResolvers.set(i, resolve); });
+      // send process
+      worker.postMessage({ type: 'process', index: i, dataURL });
+      log(`أرسلت صورة #${i} للمعالجة: ${images[i].file.name}`);
+      // await result
+      await p;
     }
-    const content = await zip.generateAsync({type:'blob'});
-    downloadZipBtn.disabled = false;
-    downloadZipBtn.onclick = ()=>saveAs(content, 'enhanced_images.zip');
+
+    // finished
+    if (!cancelled) {
+      log('انتهت جميع الصور (أو تم إيقافها). تجهيز ZIP...');
+      // generate ZIP
+      const zip = new JSZip();
+      for (let i = 0; i < images.length; ++i) {
+        const blob = images[i].outputBlob;
+        if (!blob) continue;
+        const ext = formatEl.value === 'image/webp' ? 'webp' : 'jpg';
+        const name = safeFilename(images[i].file.name).replace(/\.[^/.]+$/, '');
+        zip.file(`${name}_enhanced.${ext}`, blob);
+      }
+      const content = await zip.generateAsync({ type: 'blob' });
+      downloadZipBtn.disabled = false;
+      downloadZipBtn.onclick = ()=>saveAs(content, 'enhanced_images.zip');
+      log('ZIP جاهز للتحميل.');
+      statusOverview.innerText = 'انتهت المعالجة — يمكنك تنزيل ZIP';
+    } else {
+      log('المعالجة أُلغيَت بواسطة المستخدم.');
+      statusOverview.innerText = 'أُلغيَت المعالجة';
+    }
+
+    // cleanup & UI
     startBtn.disabled = false;
+    cancelBtn.disabled = true;
+    try { worker.terminate(); } catch(e){}
+    worker = null;
   });
 
-  // helpers
-  function loadImage(url){ return new Promise((res,rej)=>{ const img=new Image(); img.onload=()=>res(img); img.onerror=rej; img.src=url; }); }
-  function drawImageCover(ctx,img,w,h){ const ar = img.width/img.height; const ar2 = w/h; let iw=img.width, ih=img.height, sx=0,sy=0,sw=img.width,sh=img.height; if (ar > ar2){ sw = img.height * ar2; sx = (img.width - sw)/2; } else { sh = img.width / ar2; sy = (img.height - sh)/2; } ctx.clearRect(0,0,w,h); ctx.drawImage(img,sx,sy,sw,sh,0,0,w,h); }
-  function escapeHtml(s){ return (s||'').replace(/[&<>\"]+/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
-  function safeFilename(n){ return (n||'').replace(/[^a-z0-9\.\-_]/gi,'_'); }
-  function imageToDataURL(img){ const c=document.createElement('canvas'); c.width=img.naturalWidth; c.height=img.naturalHeight; c.getContext('2d').drawImage(img,0,0); return c.toDataURL('image/png'); }
-  function dataURLToBlob(dataURL){ const parts=dataURL.split(','); const meta=parts[0]; const bstr=atob(parts[1]); let n=bstr.length; const u8=new Uint8Array(n); while(n--) u8[n]=bstr.charCodeAt(n); const mime = meta.match(/:(.*?);/)[1]; return new Blob([u8],{type:mime}); }
+  // cancel
+  cancelBtn.addEventListener('click', ()=>{
+    if (!confirm('هل تريد إيقاف المعالجة الآن؟')) return;
+    cancelled = true;
+    if (worker) try { worker.terminate(); } catch(_) {}
+    worker = null;
+    startBtn.disabled = false;
+    cancelBtn.disabled = true;
+    statusOverview.innerText = 'أُلغيَت بواسطة المستخدم';
+    log('المعالجة أُلغيَت.');
+  });
+
+  // keyboard quick-keys
+  document.addEventListener('keydown', (e)=>{ if (e.key === 'Escape') { if (!cancelBtn.disabled) cancelBtn.click(); } });
+
+  // initial log
+  log('واجهة جاهزة. تأكد من أن ملفات runtime (onnx) موجودة داخل /onnx/ على Pages وأن CORS مفعل على R2.');
+  r2_esr.innerText = `ESRGAN: ${R2_REALESRGAN}`;
+  r2_gf.innerText = `GFPGAN: ${R2_GFPGAN}`;
+
   </script>
 </body>
 </html>
